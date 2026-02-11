@@ -72,6 +72,13 @@ rustup target add aarch64-apple-darwin
 
 6. Get checksum and upload: `shasum -a 256 <dmg_path>`
 
+7. The build also generates an updater manifest at:
+   ```
+   src-tauri/target/release/bundle/macos/Think.app.tar.gz.sig
+   src-tauri/target/release/bundle/macos/Think.app.tar.gz
+   ```
+   These are used by the auto-updater (see [Publishing a Release](#publishing-a-release) below).
+
 ### Windows Build
 
 Builds `.msi` installer and `.exe` setup for Windows.
@@ -106,6 +113,52 @@ Builds `.msi` installer and `.exe` setup for Windows.
 - The NSIS setup (`.exe`) automatically downloads WebView2 if needed
 - For x86 support, add `--target i686-pc-windows-msvc` (requires `rustup target add i686-pc-windows-msvc`)
 
+### Publishing a Release
+
+The app checks for updates via the Tauri updater plugin, which fetches `latest.json` from GitHub releases.
+
+**How it works:**
+- On startup (after 3s delay) and manually via Settings → General → "Check for Updates", the app fetches:
+  `https://github.com/erictli/think/releases/latest/download/latest.json`
+- The updater compares the version in `latest.json` to the running app version
+- If newer, a toast appears with an "Update Now" button that downloads and installs the update
+
+**Creating `latest.json`:**
+
+After building for each platform, create a `latest.json` file with this structure:
+
+```json
+{
+  "version": "VERSION",
+  "notes": "Release notes here",
+  "pub_date": "2025-01-01T00:00:00Z",
+  "platforms": {
+    "darwin-universal": {
+      "signature": "CONTENTS_OF .app.tar.gz.sig FILE",
+      "url": "https://github.com/erictli/think/releases/download/vVERSION/Think.app.tar.gz"
+    },
+    "windows-x86_64": {
+      "signature": "CONTENTS_OF .nsis.zip.sig FILE",
+      "url": "https://github.com/erictli/think/releases/download/vVERSION/Think_VERSION_x64-setup.nsis.zip"
+    }
+  }
+}
+```
+
+- The `signature` values come from the `.sig` files generated alongside the build artifacts
+- The `url` values should point to the release assets on GitHub
+
+**Upload to GitHub release:**
+
+1. Create a GitHub release tagged `vVERSION` (e.g., `v0.4.0`)
+2. Upload these assets:
+   - `latest.json` (the updater manifest)
+   - macOS: `Think_VERSION_universal.dmg` (for manual download) and `Think.app.tar.gz` (for auto-update)
+   - Windows: `Think_VERSION_x64-setup.exe` (for manual download) and the NSIS `.zip` (for auto-update)
+3. The updater endpoint resolves to the **latest** release's `latest.json` automatically via GitHub's `/releases/latest/download/` URL pattern
+
+**Updater config** is in `src-tauri/tauri.conf.json` under `plugins.updater`, including the public key and endpoint URL.
+
 ## Project Structure
 
 ```
@@ -126,7 +179,11 @@ think/
 │   │   │   ├── SettingsPage.tsx    # Tabbed settings interface
 │   │   │   ├── GeneralSettingsSection.tsx       # Notes folder picker
 │   │   │   ├── AppearanceSettingsSection.tsx    # Theme & typography
-│   │   │   └── GitSettingsSection.tsx           # Git config & remote
+│   │   │   ├── GitSettingsSection.tsx           # Git config & remote
+│   │   │   └── ShortcutsSettingsSection.tsx     # Keyboard shortcuts reference
+│   │   ├── ai/                     # AI editing components
+│   │   │   ├── AiEditModal.tsx     # AI prompt input modal
+│   │   │   └── AiResponseToast.tsx # AI response display with undo
 │   │   ├── git/
 │   │   │   └── GitStatus.tsx       # Floating git status with commit UI
 │   │   ├── ui/                     # Shared UI components
@@ -144,7 +201,8 @@ think/
 │   │   └── utils.ts                # cn() for className merging
 │   ├── services/                   # Tauri command wrappers
 │   │   ├── notes.ts                # Note management commands
-│   │   └── git.ts                  # Git commands
+│   │   ├── git.ts                  # Git commands
+│   │   └── ai.ts                   # AI/Claude Code CLI commands
 │   ├── types/
 │   │   └── note.ts                 # TypeScript types
 │   ├── App.tsx                     # Main app component
@@ -179,6 +237,7 @@ The settings page provides UI for:
 - Theme mode (light/dark/system)
 - Editor typography (font family, size, line height, bold weight)
 - Git integration (optional)
+- Keyboard shortcuts reference
 
 Power users can edit the settings JSON directly to customize colors.
 
@@ -189,18 +248,21 @@ TipTap editor with extensions and features:
 **Extensions:**
 - StarterKit (basic formatting)
 - Markdown (bidirectional conversion)
-- Link, Image, TaskList, TaskItem
+- Link, Image, TaskList, TaskItem, Table
 
 **Key Features:**
 - Auto-save with 300ms debounce
 - Copy-as menu (Markdown/Plain Text/HTML) via `Cmd+Shift+C`
 - Inline link editor popup (`Cmd+K`) for add/edit/remove
 - Format bar with 13 tools (bold, italic, headings, lists, code, etc.)
+- Table editing with right-click context menu (insert/delete rows/columns, merge/split cells)
 - Markdown paste detection and parsing
 - Image insertion from disk
 - External file change detection with auto-reload
+- Find in note (`Cmd+F`) with highlighting
 - "Last saved" status indicator
 - Unsaved changes spinner
+- AI editing with Claude Code CLI integration
 
 ### Component Architecture
 
@@ -220,7 +282,9 @@ TipTap editor with extensions and features:
 - `CommandPalette` - Cmd+P for quick actions and note search
 - `GitStatus` - Floating commit UI in sidebar
 - `NoteList` - Scrollable list with context menu and smart date formatting
-- `SettingsPage` - Tabbed settings (General, Appearance, Git)
+- `SettingsPage` - Tabbed settings (General, Appearance, Git, Shortcuts)
+- `AiEditModal` - AI prompt input for Claude Code CLI integration
+- `AiResponseToast` - AI response display with markdown parsing and undo button
 
 ### Tauri Commands
 
@@ -233,6 +297,8 @@ TipTap editor with extensions and features:
 **File Watching:** `start_file_watcher` (notify crate with 500ms debounce per file)
 
 **Git:** `git_is_available`, `git_get_status`, `git_init_repo`, `git_commit`, `git_push`, `git_add_remote`, `git_push_with_upstream`
+
+**AI/Claude Code:** `ai_check_claude_cli`, `ai_execute_claude` (shell execution with Claude Code CLI)
 
 **Utilities:** `copy_to_clipboard`, `copy_image_to_assets`, `save_clipboard_image`
 
@@ -270,11 +336,16 @@ Current capabilities include:
 - `Cmd+N` - New note
 - `Cmd+P` - Command palette
 - `Cmd+K` - Add/edit link (when in editor)
+- `Cmd+F` - Find in current note
+- `Cmd+Shift+C` - Copy as (Markdown/Plain Text/HTML)
 - `Cmd+R` - Reload current note (pull external changes)
-- `Cmd+,` - Toggle settings
+- `Cmd+,` - Open settings
+- `Cmd+1/2/3` - Switch settings tabs (General/Appearance/Shortcuts)
 - `Cmd+\` - Toggle sidebar
 - `Cmd+B/I` - Bold/Italic
 - Arrow keys - Navigate note list (when focused)
+
+**Note:** On Windows and Linux, use `Ctrl` instead of `Cmd` for all shortcuts. Full reference available in Settings → Shortcuts tab.
 
 ## Notes Storage
 
@@ -311,6 +382,10 @@ The app watches the notes folder for external changes (e.g., from AI agents or o
 ## Recent Development
 
 Recent commits show continuous improvement:
+- AI editing with Claude Code CLI integration (invoke Claude to edit notes)
+- Table editing support with context menu operations
+- Keyboard shortcuts reference page in settings
+- Find in note functionality with search highlighting
 - Yellow selection highlight and UI polish
 - Inline link editor (replaced wikilink support)
 - Git integration with push/remote management
