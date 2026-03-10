@@ -59,8 +59,9 @@ function SuggestionListInner<T>(
       if (event.key === "Enter") {
         if (items[selectedIndex]) {
           command(items[selectedIndex]);
+          return true;
         }
-        return true;
+        return false;
       }
       return false;
     },

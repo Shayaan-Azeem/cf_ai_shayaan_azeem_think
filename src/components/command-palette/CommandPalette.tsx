@@ -39,7 +39,6 @@ import {
   RefreshCwIcon,
   AddNoteIcon,
   TrashIcon,
-  PinIcon,
   ClaudeIcon,
   ZenIcon,
   MarkdownIcon,
@@ -62,6 +61,8 @@ interface CommandPaletteProps {
   open: boolean;
   onClose: () => void;
   onOpenSettings?: () => void;
+  onOpenHome?: () => void;
+  onOpenNotesWorkspace?: () => void;
   onOpenAiModal?: (provider: AiProvider) => void;
   focusMode?: boolean;
   onToggleFocusMode?: () => void;
@@ -72,6 +73,8 @@ export function CommandPalette({
   open,
   onClose,
   onOpenSettings,
+  onOpenHome,
+  onOpenNotesWorkspace,
   onOpenAiModal,
   focusMode,
   onToggleFocusMode,
@@ -84,8 +87,6 @@ export function CommandPalette({
     deleteNote,
     currentNote,
     refreshNotes,
-    pinNote,
-    unpinNote,
     notesFolder,
   } = useNotes();
   const { theme, setTheme } = useTheme();
@@ -121,32 +122,29 @@ export function CommandPalette({
           onClose();
         },
       },
+      {
+        id: "go-home",
+        label: "Go to Home Shelf",
+        icon: <FolderIcon className="w-4.5 h-4.5 stroke-[1.5]" />,
+        action: () => {
+          onOpenHome?.();
+          onClose();
+        },
+      },
+      {
+        id: "go-workspace",
+        label: "Go to Notes Workspace",
+        icon: <FolderIcon className="w-4.5 h-4.5 stroke-[1.5]" />,
+        action: () => {
+          onOpenNotesWorkspace?.();
+          onClose();
+        },
+      },
     ];
 
     // Add note-specific commands if a note is selected
     if (currentNote) {
-      const isPinned =
-        settings?.pinnedNoteIds?.includes(currentNote.id) || false;
-
       baseCommands.push(
-        {
-          id: isPinned ? "unpin-note" : "pin-note",
-          label: isPinned ? "Unpin Current Note" : "Pin Current Note",
-          icon: <PinIcon className="w-5 h-5 stroke-[1.3]" />,
-          action: async () => {
-            try {
-              if (isPinned) {
-                await unpinNote(currentNote.id);
-              } else {
-                await pinNote(currentNote.id);
-              }
-              onClose();
-            } catch (error) {
-              console.error("Failed to pin/unpin note:", error);
-              toast.error(`Failed to ${isPinned ? "unpin" : "pin"} note`);
-            }
-          },
-        },
         {
           id: "ai-edit",
           label: "Edit with Claude Code",
@@ -434,7 +432,9 @@ export function CommandPalette({
     currentNote,
     deleteNote,
     onClose,
+    onOpenHome,
     onOpenSettings,
+    onOpenNotesWorkspace,
     onOpenAiModal,
     setTheme,
     theme,
@@ -446,8 +446,6 @@ export function CommandPalette({
     selectNote,
     refreshNotes,
     settings,
-    pinNote,
-    unpinNote,
     focusMode,
     onToggleFocusMode,
     notesFolder,
@@ -524,11 +522,12 @@ export function CommandPalette({
         preview: note.preview,
         action: () => {
           selectNote(note.id);
+          onOpenNotesWorkspace?.();
           onClose();
         },
       })),
     ],
-    [filteredNotes, filteredCommands, selectNote, onClose],
+    [filteredNotes, filteredCommands, selectNote, onClose, onOpenNotesWorkspace],
   );
 
   // Reset state when opened

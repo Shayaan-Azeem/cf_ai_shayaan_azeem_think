@@ -2,7 +2,6 @@ import * as React from "react";
 import { type ButtonHTMLAttributes, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { Tooltip } from "./Tooltip";
-import { PinIcon } from "../icons";
 
 // Re-export components
 export {
@@ -133,9 +132,7 @@ interface ListItemProps {
   subtitle?: string;
   meta?: string;
   isSelected?: boolean;
-  isPinned?: boolean;
   onClick?: () => void;
-  /** Optional status icon to display next to meta */
 }
 
 export function ListItem({
@@ -143,7 +140,6 @@ export function ListItem({
   subtitle,
   meta,
   isSelected = false,
-  isPinned = false,
   onClick,
   onContextMenu,
 }: ListItemProps & { onContextMenu?: (e: React.MouseEvent) => void }) {
@@ -168,9 +164,6 @@ export function ListItem({
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1 min-w-0">
-          {isPinned && (
-            <PinIcon className="w-4.25 h-4.25 stroke-[1.6] fill-current text-text-muted shrink-0" />
-          )}
           <span className={cn("text-sm font-medium truncate text-text")}>
             {title}
           </span>

@@ -32,16 +32,9 @@ export function FolderPicker() {
 
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center p-8 max-w-lg select-none">
-          <img
-            src="/folders-dark.png"
-            alt="Folders"
-            className="w-48 h-auto mx-auto invert dark:invert-0 mb-2 animate-fade-in-up"
-            style={{ animationDelay: "0ms" }}
-          />
-
           <h1
             className="text-3xl text-text font-serif mb-2 tracking-[-0.01em] animate-fade-in-up"
-            style={{ animationDelay: "100ms" }}
+            style={{ animationDelay: "0ms" }}
           >
             Welcome to Think
           </h1>

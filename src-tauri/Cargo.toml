@@ -1,5 +1,5 @@
 [package]
-name = "Think"
+name = "think"
 version = "0.8.0"
 description = "An offline markdown-based notes app"
 authors = ["erictli"]
@@ -33,3 +33,4 @@ regex = "1"
 walkdir = "2"
 tauri-plugin-single-instance = "2"
 chrono = "0.4"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

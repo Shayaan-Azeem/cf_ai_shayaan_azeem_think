@@ -6,8 +6,8 @@
 
 /* Theme color tokens - Light mode (default) */
 :root {
-  --color-bg: #ffffff;
-  --color-bg-secondary: #fafaf9;
+  --color-bg: rgba(255, 255, 255, 0.85);
+  --color-bg-secondary: rgba(250, 250, 249, 0.8);
   --color-bg-muted: rgba(28, 25, 23, 0.06);
   --color-bg-emphasis: rgba(28, 25, 23, 0.09);
   --color-text: #1c1917;
@@ -52,8 +52,8 @@
 
 /* Theme color tokens - Dark mode */
 .dark {
-  --color-bg: rgb(22, 20, 19);
-  --color-bg-secondary: rgb(14, 12, 11);
+  --color-bg: rgba(22, 20, 19, 0.85);
+  --color-bg-secondary: rgba(14, 12, 11, 0.8);
   --color-bg-muted: rgba(250, 249, 249, 0.05);
   --color-bg-emphasis: rgba(250, 249, 249, 0.08);
   --color-text: #fafaf9;
@@ -124,6 +124,7 @@ body,
   padding: 0;
   overflow: hidden;
   overscroll-behavior: none;
+  background: transparent;
 }
 
 /* macOS transparent title bar support */
@@ -615,6 +616,26 @@ html.dark {
 }
 .prose span[data-wikilink]:hover {
   color: var(--color-text-muted);
+}
+
+/* Hashtags - pill style tags */
+.prose span[data-hashtag] {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-bg-muted);
+  color: color-mix(in srgb, var(--color-accent) 85%, var(--color-text) 15%);
+  font-size: 0.84em;
+  font-weight: 400;
+  line-height: 1.2;
+  padding: 0.18em 0.6em;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.dark .prose span[data-hashtag] {
+  color: color-mix(in srgb, #6ab2ff 78%, var(--color-text) 22%);
 }
 
 /* Blockquotes */

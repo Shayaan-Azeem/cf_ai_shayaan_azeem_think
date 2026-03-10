@@ -897,6 +897,25 @@ export function PanelLeftIcon({ className = "w-4.5 h-4.5" }: IconProps) {
   );
 }
 
+export function HomeIcon({ className = "w-4.5 h-4.5" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M5 12l7 -7l7 7" />
+      <path d="M5 12v7a1 1 0 0 0 1 1h4m8 -8v7a1 1 0 0 1 -1 1h-4" />
+      <path d="M10 20v-6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v6" />
+    </svg>
+  );
+}
+
 export function SearchIcon({ className = "w-4.5 h-4.5" }: IconProps) {
   return (
     <svg

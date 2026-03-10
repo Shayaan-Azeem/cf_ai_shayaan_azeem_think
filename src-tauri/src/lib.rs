@@ -20,10 +20,14 @@ mod git;
 
 // Note metadata for list display
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NoteMetadata {
     pub id: String,
     pub title: String,
     pub preview: String,
+    pub hashtags: Vec<String>,
+    pub cover_url: Option<String>,
+    pub link_url: Option<String>,
     pub modified: i64,
 }
 
@@ -109,6 +113,8 @@ pub struct Settings {
     pub custom_editor_width_px: Option<u32>,
     #[serde(rename = "ollamaModel")]
     pub ollama_model: Option<String>,
+    #[serde(rename = "chatWorkerUrl")]
+    pub chat_worker_url: Option<String>,
 }
 
 // Search result
@@ -306,6 +312,17 @@ impl SearchIndex {
     }
 }
 
+// Edit history entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditEntry {
+    pub note_id: String,
+    pub title: String,
+    pub timestamp: i64,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
 // App state with improved structure
 pub struct AppState {
     pub app_config: RwLock<AppConfig>,  // notes_folder path (stored in app data)
@@ -314,6 +331,7 @@ pub struct AppState {
     pub file_watcher: Mutex<Option<FileWatcherState>>,
     pub search_index: Mutex<Option<SearchIndex>>,
     pub debounce_map: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    pub edit_history: RwLock<Vec<EditEntry>>,
 }
 
 impl Default for AppState {
@@ -325,8 +343,19 @@ impl Default for AppState {
             file_watcher: Mutex::new(None),
             search_index: Mutex::new(None),
             debounce_map: Arc::new(Mutex::new(HashMap::new())),
+            edit_history: RwLock::new(Vec::new()),
         }
     }
+}
+
+fn compute_line_diff(old: &str, new: &str) -> (usize, usize) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let old_set: std::collections::HashSet<&str> = old_lines.iter().copied().collect();
+    let new_set: std::collections::HashSet<&str> = new_lines.iter().copied().collect();
+    let insertions = new_lines.iter().filter(|l| !old_set.contains(**l)).count();
+    let deletions = old_lines.iter().filter(|l| !new_set.contains(**l)).count();
+    (insertions, deletions)
 }
 
 // Utility: Sanitize filename from title
@@ -453,6 +482,38 @@ fn generate_preview(content: &str) -> String {
         }
     }
     String::new()
+}
+
+// Extract hashtags from full note content for section classification.
+fn extract_hashtags(content: &str) -> Vec<String> {
+    let hashtag_re = regex::Regex::new(r"(?i)(?:^|\s)#([a-z0-9][a-z0-9_-]*)").unwrap();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut hashtags = Vec::new();
+
+    for caps in hashtag_re.captures_iter(content) {
+        if let Some(tag_match) = caps.get(1) {
+            let normalized = tag_match.as_str().to_ascii_lowercase();
+            if seen.insert(normalized.clone()) {
+                hashtags.push(normalized);
+            }
+        }
+    }
+
+    hashtags
+}
+
+fn extract_cover_url(content: &str) -> Option<String> {
+    let cover_re = regex::Regex::new(r"<!--\s*cover:\s*(.+?)\s*-->").unwrap();
+    cover_re.captures(content).and_then(|caps| {
+        caps.get(1).map(|m| m.as_str().trim().to_string())
+    })
+}
+
+fn extract_link_url(content: &str) -> Option<String> {
+    let link_re = regex::Regex::new(r"<!--\s*link:\s*(https?://\S+)\s*-->").unwrap();
+    link_re.captures(content).and_then(|caps| {
+        caps.get(1).map(|m| m.as_str().to_string())
+    })
 }
 
 // Strip common markdown formatting from text
@@ -818,7 +879,7 @@ async fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteMetadata>, Str
     let path_clone = path.clone();
     let discovered = tokio::task::spawn_blocking(move || {
         use walkdir::WalkDir;
-        let mut results: Vec<(String, String, String, i64)> = Vec::new();
+        let mut results: Vec<(String, String, String, Vec<String>, Option<String>, Option<String>, i64)> = Vec::new();
         for entry in WalkDir::new(&path_clone)
             .max_depth(10)
             .into_iter()
@@ -840,7 +901,10 @@ async fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteMetadata>, Str
                         .unwrap_or(0);
                     let title = extract_title(&content);
                     let preview = generate_preview(&content);
-                    results.push((id, title, preview, modified));
+                    let hashtags = extract_hashtags(&content);
+                    let cover_url = extract_cover_url(&content);
+                    let link_url = extract_link_url(&content);
+                    results.push((id, title, preview, hashtags, cover_url, link_url, modified));
                 }
             }
         }
@@ -851,10 +915,13 @@ async fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteMetadata>, Str
 
     let mut notes: Vec<NoteMetadata> = discovered
         .into_iter()
-        .map(|(id, title, preview, modified)| NoteMetadata {
+        .map(|(id, title, preview, hashtags, cover_url, link_url, modified)| NoteMetadata {
             id,
             title,
             preview,
+            hashtags,
+            cover_url,
+            link_url,
             modified,
         })
         .collect();
@@ -1001,10 +1068,38 @@ async fn save_note(
         (new_id, new_file_path, None)
     };
 
+    // Read old content for diff tracking
+    let old_content = if let Some((_, ref old_path)) = old_id {
+        fs::read_to_string(old_path).await.unwrap_or_default()
+    } else if file_path.exists() {
+        fs::read_to_string(&file_path).await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     // Write the file to the new path
     fs::write(&file_path, &content)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Record edit history
+    {
+        let (insertions, deletions) = compute_line_diff(&old_content, &content);
+        if insertions > 0 || deletions > 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let mut history = state.edit_history.write().expect("edit_history write lock");
+            history.push(EditEntry {
+                note_id: final_id.clone(),
+                title: title.clone(),
+                timestamp: now,
+                insertions,
+                deletions,
+            });
+        }
+    }
 
     // Delete old file AFTER successful write (to prevent data loss)
     if let Some((_, ref old_file_path)) = old_id {
@@ -1404,6 +1499,9 @@ async fn import_file_to_folder(
         id: final_id,
         title: extracted_title,
         preview,
+        hashtags: extract_hashtags(&content),
+        cover_url: extract_cover_url(&content),
+        link_url: extract_link_url(&content),
         modified,
     };
 
@@ -2622,6 +2720,376 @@ async fn ai_execute_ollama(
     }
 }
 
+// Book search result from Open Library
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookSearchResult {
+    pub title: String,
+    pub author: String,
+    pub cover_url: Option<String>,
+    pub work_key: String,
+    pub year: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct OLSearchResponse {
+    docs: Vec<OLDoc>,
+}
+
+#[derive(Deserialize)]
+struct OLDoc {
+    title: Option<String>,
+    author_name: Option<Vec<String>>,
+    cover_i: Option<i64>,
+    key: Option<String>,
+    first_publish_year: Option<i32>,
+}
+
+#[tauri::command]
+async fn search_books(query: String, limit: Option<usize>) -> Result<Vec<BookSearchResult>, String> {
+    let trimmed = query.trim();
+    if trimmed.len() < 2 {
+        return Ok(vec![]);
+    }
+
+    let max = limit.unwrap_or(8).min(20);
+    let url = format!(
+        "https://openlibrary.org/search.json?q={}&fields=title,author_name,cover_i,key,first_publish_year&limit={}",
+        urlencoding::encode(trimmed),
+        max,
+    );
+
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("Book search request failed: {}", e))?;
+
+    let data: OLSearchResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse book search response: {}", e))?;
+
+    let results: Vec<BookSearchResult> = data
+        .docs
+        .into_iter()
+        .filter_map(|doc| {
+            let title = doc.title.filter(|t| !t.is_empty())?;
+            Some(BookSearchResult {
+                title,
+                author: doc
+                    .author_name
+                    .and_then(|a| a.into_iter().next())
+                    .unwrap_or_else(|| "Unknown author".to_string()),
+                cover_url: doc.cover_i.map(|id| {
+                    format!("https://covers.openlibrary.org/b/id/{}-M.jpg", id)
+                }),
+                work_key: doc.key.unwrap_or_default(),
+                year: doc.first_publish_year,
+            })
+        })
+        .collect();
+
+    Ok(results)
+}
+
+// --- URL metadata fetch ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlMetadata {
+    pub title: String,
+    pub author: String,
+    pub publication: String,
+    pub url: String,
+    pub domain: String,
+    pub cover_url: Option<String>,
+    pub description: Option<String>,
+    pub published_at: Option<String>,
+}
+
+pub type SubstackArticleResult = UrlMetadata;
+
+// FXTwitter JSON API response types (api.fxtwitter.com)
+#[derive(Debug, Deserialize)]
+struct FxTweetResponse {
+    code: u32,
+    tweet: Option<FxTweet>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxTweet {
+    text: String,
+    author: FxAuthor,
+    media: Option<FxMedia>,
+    article: Option<FxArticle>,
+    created_timestamp: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxAuthor {
+    name: String,
+    screen_name: String,
+    avatar_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxMedia {
+    photos: Option<Vec<FxPhoto>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxPhoto {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxArticle {
+    title: Option<String>,
+}
+
+#[tauri::command]
+async fn get_edit_history(state: State<'_, AppState>) -> Result<Vec<EditEntry>, String> {
+    let history = state.edit_history.read().expect("edit_history read lock");
+    let mut entries = history.clone();
+    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(entries)
+}
+
+fn extract_og_tag(html: &str, property: &str) -> Option<String> {
+    let pattern = format!(
+        r#"<meta[^>]+(?:property|name)=["']{}["'][^>]+content=["']([^"']*)["']"#,
+        regex::escape(property)
+    );
+    if let Ok(re) = regex::Regex::new(&pattern) {
+        if let Some(caps) = re.captures(html) {
+            return caps.get(1).map(|m| m.as_str().to_string());
+        }
+    }
+    // Also try content-first order: <meta content="..." property="...">
+    let pattern2 = format!(
+        r#"<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']{}["']"#,
+        regex::escape(property)
+    );
+    if let Ok(re) = regex::Regex::new(&pattern2) {
+        if let Some(caps) = re.captures(html) {
+            return caps.get(1).map(|m| m.as_str().to_string());
+        }
+    }
+    None
+}
+
+fn extract_favicon(html: &str, page_url: &str) -> Option<String> {
+    let base = url::Url::parse(page_url).ok()?;
+
+    // Try <link rel="icon" ...> and <link rel="shortcut icon" ...> with various href patterns
+    let re = regex::Regex::new(
+        r#"<link[^>]+rel=["'](?:shortcut )?icon["'][^>]+href=["']([^"']+)["']"#,
+    ).ok()?;
+    if let Some(caps) = re.captures(html) {
+        let href = caps.get(1)?.as_str();
+        let resolved = base.join(href).ok()?;
+        return Some(resolved.to_string());
+    }
+    // Also try href-first order
+    let re2 = regex::Regex::new(
+        r#"<link[^>]+href=["']([^"']+)["'][^>]+rel=["'](?:shortcut )?icon["']"#,
+    ).ok()?;
+    if let Some(caps) = re2.captures(html) {
+        let href = caps.get(1)?.as_str();
+        let resolved = base.join(href).ok()?;
+        return Some(resolved.to_string());
+    }
+
+    // Fallback: /favicon.ico at the origin
+    let mut origin = base.clone();
+    origin.set_path("/favicon.ico");
+    origin.set_query(None);
+    origin.set_fragment(None);
+    Some(origin.to_string())
+}
+
+/// Extract (handle, id) from X/Twitter URLs like x.com/:handle/status/:id or x.com/:handle/article/:id
+fn parse_twitter_url(url_str: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(url_str).ok()?;
+    let host = parsed.host_str().unwrap_or("");
+    if !matches!(host, "x.com" | "www.x.com" | "twitter.com" | "www.twitter.com" | "mobile.twitter.com") {
+        return None;
+    }
+    let segments: Vec<&str> = parsed.path_segments()?.collect();
+    // Pattern: /:handle/status/:id or /:handle/article/:id
+    if segments.len() >= 3 && (segments[1] == "status" || segments[1] == "article") {
+        let handle = segments[0].to_string();
+        let id = segments[2].to_string();
+        if !handle.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
+            return Some((handle, id));
+        }
+    }
+    None
+}
+
+async fn fetch_twitter_metadata(url_str: &str, handle: &str, id: &str) -> Result<UrlMetadata, String> {
+    let api_url = format!("https://api.fxtwitter.com/{}/status/{}", handle, id);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&api_url)
+        .header("User-Agent", "Mozilla/5.0")
+        .send()
+        .await
+        .map_err(|e| format!("FXTwitter API request failed: {}", e))?;
+
+    let fx: FxTweetResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("FXTwitter API parse failed: {}", e))?;
+
+    if fx.code != 200 {
+        return Err(format!("FXTwitter API returned code {}", fx.code));
+    }
+
+    let tweet = fx.tweet.ok_or("FXTwitter returned no tweet data")?;
+
+    let title = tweet.article
+        .as_ref()
+        .and_then(|a| a.title.clone())
+        .unwrap_or_else(|| {
+            let text = tweet.text.trim().to_string();
+            if text.len() > 100 {
+                format!("{}…", &text[..text.char_indices().nth(100).map(|(i, _)| i).unwrap_or(text.len())])
+            } else {
+                text
+            }
+        });
+
+    let author = format!("{} (@{})", tweet.author.name, tweet.author.screen_name);
+
+    let cover_url = tweet.media
+        .as_ref()
+        .and_then(|m| m.photos.as_ref())
+        .and_then(|photos| photos.first())
+        .map(|p| p.url.clone())
+        .or_else(|| tweet.author.avatar_url.clone());
+
+    let published_at = tweet.created_timestamp.map(|ts| {
+        chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_default()
+    });
+
+    Ok(UrlMetadata {
+        title,
+        author,
+        publication: "X".to_string(),
+        url: url_str.to_string(),
+        domain: "x.com".to_string(),
+        cover_url,
+        description: None,
+        published_at,
+    })
+}
+
+async fn fetch_url_metadata_inner(url_str: &str) -> Result<UrlMetadata, String> {
+    if url_str.is_empty() {
+        return Err("URL is empty".to_string());
+    }
+
+    // X/Twitter: use the FXTwitter JSON API for structured data
+    if let Some((handle, id)) = parse_twitter_url(url_str) {
+        if let Ok(meta) = fetch_twitter_metadata(url_str, &handle, &id).await {
+            return Ok(meta);
+        }
+        // Fall through to generic OG-tag scraping on failure
+    }
+
+    let domain = url::Url::parse(url_str)
+        .map(|u| u.host_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url_str)
+        .header("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch URL: {}", e))?;
+
+    let html = resp.text().await.map_err(|e| format!("Failed to read page: {}", e))?;
+
+    let title = extract_og_tag(&html, "og:title")
+        .or_else(|| extract_og_tag(&html, "twitter:title"))
+        .or_else(|| {
+            let re = regex::Regex::new(r"<title[^>]*>([^<]+)</title>").ok()?;
+            re.captures(&html).and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+        })
+        .unwrap_or_else(|| "Untitled".to_string());
+
+    let author = extract_og_tag(&html, "article:author")
+        .or_else(|| extract_og_tag(&html, "author"))
+        .or_else(|| extract_og_tag(&html, "twitter:creator"))
+        .unwrap_or_default();
+
+    let publication = extract_og_tag(&html, "og:site_name")
+        .or_else(|| extract_og_tag(&html, "twitter:site"))
+        .unwrap_or_default();
+    let cover_url = extract_og_tag(&html, "og:image")
+        .or_else(|| extract_og_tag(&html, "twitter:image"))
+        .or_else(|| extract_favicon(&html, url_str));
+    let description = extract_og_tag(&html, "og:description")
+        .or_else(|| extract_og_tag(&html, "twitter:description"));
+    let published_at = extract_og_tag(&html, "article:published_time")
+        .map(|d| d.chars().take(10).collect());
+
+    Ok(UrlMetadata {
+        title,
+        author,
+        publication,
+        url: url_str.to_string(),
+        domain,
+        cover_url,
+        description,
+        published_at,
+    })
+}
+
+#[tauri::command]
+async fn fetch_url_metadata(url: String) -> Result<UrlMetadata, String> {
+    fetch_url_metadata_inner(url.trim()).await
+}
+
+#[tauri::command]
+async fn fetch_substack_url(url: String) -> Result<UrlMetadata, String> {
+    fetch_url_metadata_inner(url.trim()).await
+}
+
+#[tauri::command]
+async fn fetch_image_as_data_url(url: String) -> Result<String, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("URL is empty".to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(trimmed)
+        .header("User-Agent", "Mozilla/5.0")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch image: {}", e))?;
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .split(';')
+        .next()
+        .unwrap_or("image/jpeg")
+        .to_string();
+
+    let bytes = resp.bytes().await.map_err(|e| format!("Failed to read image: {}", e))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+    Ok(format!("data:{};base64,{}", content_type, b64))
+}
+
 /// Check if a markdown file is inside the configured notes folder.
 /// If so, emit a "select-note" event to the main window and focus it, returning true.
 /// Returns false on any failure so callers can fall back to create_preview_window.
@@ -2847,6 +3315,7 @@ pub fn run() {
                 file_watcher: Mutex::new(None),
                 search_index: Mutex::new(search_index),
                 debounce_map: Arc::new(Mutex::new(HashMap::new())),
+                edit_history: RwLock::new(Vec::new()),
             };
             app.manage(state);
 
@@ -2949,6 +3418,11 @@ pub fn run() {
             save_file_direct,
             import_file_to_folder,
             open_file_preview,
+            search_books,
+            fetch_substack_url,
+            fetch_url_metadata,
+            get_edit_history,
+            fetch_image_as_data_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -19,6 +19,7 @@ import {
 import { AiEditModal } from "./components/ai/AiEditModal";
 import { AiResponseToast } from "./components/ai/AiResponseToast";
 import { PreviewApp } from "./components/preview/PreviewApp";
+import { HomePage } from "./components/home/HomePage";
 import {
   check as checkForUpdate,
   type Update,
@@ -26,6 +27,8 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as aiService from "./services/ai";
 import type { AiProvider } from "./services/ai";
+import { fetchUrlMetadata } from "./services/urlMetadata";
+import { getSettings } from "./services/notes";
 
 // Detect preview mode from URL search params
 function getWindowMode(): {
@@ -41,13 +44,14 @@ function getWindowMode(): {
   };
 }
 
-type ViewState = "notes" | "settings";
+type ViewState = "home" | "notes" | "settings";
 
 function AppContent() {
   const {
     notesFolder,
     isLoading,
     createNote,
+    saveNote,
     notes,
     selectedNoteId,
     selectNote,
@@ -55,18 +59,49 @@ function AppContent() {
     searchResults,
     reloadCurrentNote,
     currentNote,
+    refreshNotes,
   } = useNotes();
   const { interfaceZoom, setInterfaceZoom } = useTheme();
   const interfaceZoomRef = useRef(interfaceZoom);
   interfaceZoomRef.current = interfaceZoom;
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [view, setView] = useState<ViewState>("notes");
+  const [view, setView] = useState<ViewState>("home");
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiEditing, setAiEditing] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [aiProvider, setAiProvider] = useState<AiProvider>("claude");
+  const [chatWorkerUrl, setChatWorkerUrl] = useState<string | undefined>();
   const editorRef = useRef<TiptapEditor | null>(null);
+
+  const loadChatWorkerUrl = useCallback(() => {
+    if (!notesFolder) {
+      setChatWorkerUrl(undefined);
+      return;
+    }
+
+    getSettings()
+      .then((settings) => {
+        setChatWorkerUrl(settings.chatWorkerUrl?.trim() || undefined);
+      })
+      .catch(() => {
+        setChatWorkerUrl(undefined);
+      });
+  }, [notesFolder]);
+
+  useEffect(() => {
+    loadChatWorkerUrl();
+  }, [loadChatWorkerUrl]);
+
+  useEffect(() => {
+    const handleSettingsUpdated = () => {
+      loadChatWorkerUrl();
+    };
+
+    window.addEventListener("settings-updated", handleSettingsUpdated);
+    return () =>
+      window.removeEventListener("settings-updated", handleSettingsUpdated);
+  }, [loadChatWorkerUrl]);
 
   const toggleSidebar = useCallback(() => {
     setSidebarVisible((prev) => !prev);
@@ -91,6 +126,103 @@ function AppContent() {
   const closeSettings = useCallback(() => {
     setView("notes");
   }, []);
+
+  const openHome = useCallback(() => {
+    setView("home");
+  }, []);
+
+  const openNotesWorkspace = useCallback(() => {
+    setView("notes");
+  }, []);
+
+  const openNoteFromHome = useCallback(
+    async (id: string) => {
+      await selectNote(id);
+      setSidebarVisible(false);
+      setView("notes");
+    },
+    [selectNote],
+  );
+
+  const createHomeNote = useCallback(
+    async (title?: string, tag?: string) => {
+      const created = await createNote();
+      const heading = title ? `# ${title}` : `# ${created.title}`;
+      const normalizedTag = tag?.replace(/^#/, "").trim().toLowerCase();
+      const lines = [heading, ""];
+      if (normalizedTag) lines.push(`#${normalizedTag}`, "");
+      await saveNote(lines.join("\n"), created.id);
+      setView("notes");
+    },
+    [createNote, saveNote],
+  );
+
+  const createHomeBookNote = useCallback(
+    async (book: { title: string; author: string; coverUrl: string | null; year: number | null }) => {
+      const created = await createNote();
+      const lines = [`# ${book.title}`, ""];
+      const meta: string[] = [];
+      if (book.coverUrl) meta.push(`<!-- cover: ${book.coverUrl} -->`);
+      meta.push(`**Author:** ${book.author}`);
+      if (book.year) meta.push(`**Published:** ${book.year}`);
+      lines.push(meta.join("\n"), "", "#book #to-read", "");
+      await saveNote(lines.join("\n"), created.id);
+      setView("notes");
+    },
+    [createNote, saveNote],
+  );
+
+  const createHomeUrlNote = useCallback(
+    async (article: { title: string; author: string; publication: string; url: string; domain?: string; coverUrl: string | null; description: string | null; publishedAt: string | null }, tag: string) => {
+      const created = await createNote();
+      const lines = [`# ${article.title}`, ""];
+      const meta: string[] = [];
+      if (article.coverUrl) meta.push(`<!-- cover: ${article.coverUrl} -->`);
+      if (article.url) meta.push(`<!-- link: ${article.url} -->`);
+      if (article.author) meta.push(`**Author:** ${article.author}`);
+      if (article.publication) {
+        meta.push(`**Source:** [${article.publication}](${article.url})`);
+      } else if (article.url) {
+        meta.push(`**Link:** [${article.domain || article.url}](${article.url})`);
+      }
+      if (article.publishedAt) meta.push(`**Published:** ${article.publishedAt}`);
+      if (meta.length) lines.push(meta.join("\n"), "");
+      lines.push(`#${tag} #to-read`, "");
+      await saveNote(lines.join("\n"), created.id);
+      setView("notes");
+    },
+    [createNote, saveNote],
+  );
+
+  const createHomePasteNote = useCallback(
+    async (url: string, status: string) => {
+      try {
+        const meta = await fetchUrlMetadata(url);
+        const domain = meta.domain.toLowerCase();
+
+        let typeTag = "blog";
+        if (domain.includes("github.com") || domain.includes("stackoverflow.com") || domain.includes("dev.to") || domain.includes("medium.com") || domain.includes("hackernews")) typeTag = "technical";
+
+        const created = await createNote();
+        const lines = [`# ${meta.title}`, ""];
+        const block: string[] = [];
+        if (meta.coverUrl) block.push(`<!-- cover: ${meta.coverUrl} -->`);
+        block.push(`<!-- link: ${meta.url} -->`);
+        if (meta.author) block.push(`**Author:** ${meta.author}`);
+        if (meta.publication) {
+          block.push(`**Source:** [${meta.publication}](${meta.url})`);
+        } else {
+          block.push(`**Link:** [${meta.domain || meta.url}](${meta.url})`);
+        }
+        lines.push(block.join("\n"), "");
+        lines.push(`#${typeTag} #${status}`, "");
+        await saveNote(lines.join("\n"), created.id);
+      } catch {
+        toast.error("Could not fetch that link.");
+      }
+    },
+    [createNote, saveNote],
+  );
 
   // Go back to command palette from AI modal
   const handleBackToPalette = useCallback(() => {
@@ -238,7 +370,7 @@ function AppContent() {
 
       // Trap Tab/Shift+Tab in notes view only - prevent focus navigation
       // TipTap handles indentation internally before event bubbles up
-      if (e.key === "Tab") {
+      if (view === "notes" && e.key === "Tab") {
         e.preventDefault();
         return;
       }
@@ -272,7 +404,8 @@ function AppContent() {
       // Cmd+N - New note
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         e.preventDefault();
-        createNote();
+        void createNote();
+        setView("notes");
         return;
       }
 
@@ -284,7 +417,7 @@ function AppContent() {
       }
 
       // Arrow keys for note navigation (when not in editor or input)
-      if (!isInEditor && !isInInput && displayItems.length > 0) {
+      if (view === "notes" && !isInEditor && !isInInput && displayItems.length > 0) {
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
           e.preventDefault();
           const currentIndex = displayItems.findIndex(
@@ -382,6 +515,26 @@ function AppContent() {
       <div className="h-screen flex bg-bg overflow-hidden">
         {view === "settings" ? (
           <SettingsPage onBack={closeSettings} />
+        ) : view === "home" ? (
+          <HomePage
+            notes={notes}
+            onOpenNote={openNoteFromHome}
+            onCreateNote={(title, tag) => {
+              void createHomeNote(title, tag);
+            }}
+            onCreateBookNote={(book) => {
+              void createHomeBookNote(book);
+            }}
+            onCreateUrlNote={(metadata, tag) => {
+              void createHomeUrlNote(metadata, tag);
+            }}
+            onPasteUrl={(url, status) => {
+              void createHomePasteNote(url, status);
+            }}
+            onOpenSettings={toggleSettings}
+            onRefresh={() => void refreshNotes()}
+            chatWorkerUrl={chatWorkerUrl}
+          />
         ) : (
           <>
             <div
@@ -391,6 +544,7 @@ function AppContent() {
             </div>
             <Editor
               onToggleSidebar={toggleSidebar}
+              onGoHome={openHome}
               sidebarVisible={sidebarVisible && !focusMode}
               focusMode={focusMode}
               onEditorReady={(editor) => {
@@ -416,6 +570,8 @@ function AppContent() {
         open={paletteOpen}
         onClose={handleClosePalette}
         onOpenSettings={toggleSettings}
+        onOpenHome={openHome}
+        onOpenNotesWorkspace={openNotesWorkspace}
         onOpenAiModal={(provider) => {
           setAiProvider(provider);
           setAiModalOpen(true);

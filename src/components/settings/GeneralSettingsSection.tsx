@@ -63,23 +63,23 @@ export function GeneralSettingsSection() {
   const [showRemoteInput, setShowRemoteInput] = useState(false);
   const [noteTemplate, setNoteTemplate] = useState<string>("Untitled");
   const [previewNoteName, setPreviewNoteName] = useState<string>("Untitled");
+  const [chatWorkerUrl, setChatWorkerUrl] = useState<string>("");
 
-  // Load template from settings on mount
   useEffect(() => {
-    const loadTemplate = async () => {
+    const loadSettings = async () => {
       try {
         const settings = await invoke<Settings>("get_settings");
         const template = settings.defaultNoteName || "Untitled";
         setNoteTemplate(template);
+        setChatWorkerUrl(settings.chatWorkerUrl || "");
 
-        // Update preview
         const preview = await invoke<string>("preview_note_name", { template });
         setPreviewNoteName(preview);
       } catch (error) {
-        console.error("Failed to load template:", error);
+        console.error("Failed to load settings:", error);
       }
     };
-    loadTemplate();
+    loadSettings();
   }, []);
 
   // Update preview when template changes (debounced)
@@ -544,6 +544,49 @@ export function GeneralSettingsSection() {
               </p>
             </div>
           </details>
+        </div>
+      </section>
+
+      {/* Divider */}
+      <div className="border-t border-border border-dashed" />
+
+      {/* Chat Agent */}
+      <section className="pb-2">
+        <h2 className="text-xl font-medium mb-0.5">Chat Agent</h2>
+        <p className="text-sm text-text-muted mb-4">
+          Connect to a Cloudflare Worker to chat with your notes using AI
+        </p>
+        <div className="space-y-2">
+          <Input
+            type="url"
+            value={chatWorkerUrl}
+            onChange={(e) => setChatWorkerUrl(e.target.value)}
+            onBlur={async () => {
+              try {
+                const settings = await invoke<Settings>("get_settings");
+                await invoke("update_settings", {
+                  newSettings: {
+                    ...settings,
+                    chatWorkerUrl: chatWorkerUrl.trim() || undefined,
+                  },
+                });
+                window.dispatchEvent(new CustomEvent("settings-updated"));
+                if (chatWorkerUrl.trim()) {
+                  toast.success("Chat agent URL saved");
+                }
+              } catch (error) {
+                console.error("Failed to save chat worker URL:", error);
+                toast.error("Failed to save chat agent URL");
+              }
+            }}
+            placeholder="https://your-worker.your-subdomain.workers.dev"
+          />
+          <p className="text-2xs text-text-muted">
+            Deploy the chat agent from{" "}
+            <code className="bg-bg-muted px-1 rounded">workers/chat-agent/</code>{" "}
+            and paste the URL here. The agent uses Llama 3.3 on Workers AI to
+            chat about your notes.
+          </p>
         </div>
       </section>
     </div>

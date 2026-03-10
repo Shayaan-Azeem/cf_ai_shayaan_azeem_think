@@ -2,6 +2,9 @@ export interface NoteMetadata {
   id: string;
   title: string;
   preview: string;
+  hashtags?: string[];
+  coverUrl?: string | null;
+  linkUrl?: string | null;
   modified: number;
 }
 
@@ -40,4 +43,5 @@ export interface Settings {
   defaultNoteName?: string;
   interfaceZoom?: number;
   ollamaModel?: string;
+  chatWorkerUrl?: string;
 }

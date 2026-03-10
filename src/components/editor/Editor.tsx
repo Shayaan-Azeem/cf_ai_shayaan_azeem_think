@@ -47,7 +47,10 @@ import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { useOptionalNotes } from "../../context/NotesContext";
 import { useTheme } from "../../context/ThemeContext";
 import { Frontmatter } from "./Frontmatter";
+import { MetaComment } from "./MetaComment";
 import { BlockMathEditor } from "./BlockMathEditor";
+import { Hashtag } from "./Hashtag";
+import { HashtagSuggestion } from "./HashtagSuggestion";
 import { LinkEditor } from "./LinkEditor";
 import { SearchToolbar } from "./SearchToolbar";
 import { SlashCommand } from "./SlashCommand";
@@ -57,10 +60,21 @@ import { EditorWidthHandles } from "./EditorWidthHandle";
 import { ThinkBlockMath, normalizeBlockMath } from "./MathExtensions";
 import { cn } from "../../lib/utils";
 import { plainTextFromMarkdown } from "../../lib/plainText";
-import { Button, IconButton, ToolbarButton, Tooltip } from "../ui";
-import * as notesService from "../../services/notes";
+import {
+  Button,
+  IconButton,
+  ToolbarButton,
+  Tooltip,
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "../ui";
 import { downloadPdf, downloadMarkdown } from "../../services/pdf";
-import type { Settings } from "../../types/note";
 import {
   BoldIcon,
   ItalicIcon,
@@ -87,12 +101,13 @@ import {
   DownloadIcon,
   ShareIcon,
   PanelLeftIcon,
+  HomeIcon,
   RefreshCwIcon,
-  PinIcon,
   SearchIcon,
   MarkdownIcon,
   MarkdownOffIcon,
   FolderPlusIcon,
+  TrashIcon,
 } from "../icons";
 
 function formatDateTime(timestamp: number): string {
@@ -206,6 +221,7 @@ interface FormatBarProps {
   onAddLink: () => void;
   onAddBlockMath: () => void;
   onAddImage: () => void;
+  centered?: boolean;
 }
 
 // FormatBar must re-render with parent to reflect editor.isActive() state changes
@@ -215,13 +231,19 @@ function FormatBar({
   onAddLink,
   onAddBlockMath,
   onAddImage,
+  centered = false,
 }: FormatBarProps) {
   const [tableMenuOpen, setTableMenuOpen] = useState(false);
 
   if (!editor) return null;
 
   return (
-    <div className="flex items-center gap-1 px-3 pb-2 border-b border-border overflow-x-auto scrollbar-none">
+    <div
+      className={cn(
+        "flex items-center gap-1 px-3 pb-2 border-b border-border overflow-x-auto scrollbar-none",
+        centered && "justify-center",
+      )}
+    >
       <ToolbarButton
         onClick={() => editor.chain().focus().toggleBold().run()}
         isActive={editor.isActive("bold")}
@@ -401,6 +423,7 @@ export interface PreviewModeData {
 
 interface EditorProps {
   onToggleSidebar?: () => void;
+  onGoHome?: () => void;
   sidebarVisible?: boolean;
   focusMode?: boolean;
   previewMode?: PreviewModeData;
@@ -411,6 +434,7 @@ interface EditorProps {
 
 export function Editor({
   onToggleSidebar,
+  onGoHome,
   sidebarVisible,
   focusMode,
   onEditorReady,
@@ -440,6 +464,7 @@ export function Editor({
     : notesCtx!.saveNote;
 
   const createNote = notesCtx?.createNote;
+  const deleteNote = notesCtx?.deleteNote;
   const hasExternalChanges = previewMode
     ? previewMode.hasExternalChanges
     : notesCtx!.hasExternalChanges;
@@ -449,15 +474,13 @@ export function Editor({
   const reloadVersion = previewMode
     ? previewMode.reloadVersion
     : notesCtx!.reloadVersion;
-  const pinNote = notesCtx?.pinNote;
-  const unpinNote = notesCtx?.unpinNote;
   const notes = notesCtx?.notes;
   const { textDirection } = useTheme();
   const [isSaving, setIsSaving] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   // Force re-render when selection changes to update toolbar active states
   const [, setSelectionKey] = useState(0);
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
-  const [settings, setSettings] = useState<Settings | null>(null);
   // Delay transition classes until after initial mount to avoid format bar height animation on note load
   const [hasTransitioned, setHasTransitioned] = useState(false);
   useEffect(() => {
@@ -492,6 +515,7 @@ export function Editor({
   notesRef.current = notes;
   const notesCtxRef = useRef(notesCtx);
   notesCtxRef.current = notesCtx;
+  const centerFormatBar = !sidebarVisible && !focusMode && !sourceMode;
 
   // Keep ref in sync with current note ID
   currentNoteIdRef.current = currentNote?.id ?? null;
@@ -513,21 +537,7 @@ export function Editor({
     [],
   );
 
-  // Load settings when note changes or notes are refreshed (e.g., after pin/unpin)
-  useEffect(() => {
-    if (currentNote?.id && !previewMode) {
-      notesService
-        .getSettings()
-        .then(setSettings)
-        .catch((error) => {
-          console.error("Failed to load settings:", error);
-        });
-    }
-  }, [currentNote?.id, notes, previewMode]);
 
-  // Calculate if current note is pinned
-  const isPinned =
-    settings?.pinnedNoteIds?.includes(currentNote?.id || "") || false;
 
   // Find all matches for search query (case-insensitive)
   const findMatches = useCallback(
@@ -984,12 +994,15 @@ export function Editor({
         },
       }),
       Frontmatter,
+      MetaComment,
       Markdown.configure({}),
       SearchHighlight.configure({
         matches: [],
         currentIndex: 0,
       }),
       SlashCommand,
+      Hashtag,
+      HashtagSuggestion,
       Wikilink,
       WikilinkSuggestion,
       ThinkBlockMath.configure({
@@ -1809,12 +1822,7 @@ export function Editor({
         ></div>
         <div className="flex-1 flex items-center justify-center pb-8">
           <div className="text-center text-text-muted select-none">
-            <img
-              src="/note-dark.png"
-              alt="Note"
-              className="w-42 h-auto mx-auto mb-1 invert dark:invert-0"
-            />
-            <h1 className="text-2xl text-text font-serif mb-1 tracking-[-0.01em] ">
+            <h1 className="text-2xl text-text font-serif mb-1 tracking-[-0.01em]">
               What's on your mind?
             </h1>
             <p className="text-sm">
@@ -1867,6 +1875,11 @@ export function Editor({
               <PanelLeftIcon className="w-4.5 h-4.5 stroke-[1.5]" />
             </IconButton>
           )}
+          {onGoHome && (
+            <IconButton onClick={onGoHome} title="Go to Home Shelf" className="shrink-0">
+              <HomeIcon className="w-4.25 h-4.25 stroke-[1.5]" />
+            </IconButton>
+          )}
           <span className="text-xs text-text-muted mb-px truncate">
             {formatDateTime(currentNote.modified)}
           </span>
@@ -1899,38 +1912,10 @@ export function Editor({
               </div>
             </Tooltip>
           )}
-          {currentNote && pinNote && unpinNote && (
-            <Tooltip content={isPinned ? "Unpin note" : "Pin note"}>
-              <IconButton
-                onClick={async () => {
-                  if (!currentNote) return;
-                  try {
-                    if (isPinned) {
-                      await unpinNote(currentNote.id);
-                      toast.success("Note unpinned");
-                    } else {
-                      await pinNote(currentNote.id);
-                      toast.success("Note pinned");
-                    }
-                    // Reload settings to update isPinned state
-                    const updatedSettings = await notesService.getSettings();
-                    setSettings(updatedSettings);
-                  } catch (error) {
-                    console.error("Failed to pin/unpin note:", error);
-                    toast.error(
-                      `Failed to ${isPinned ? "unpin" : "pin"} note: ${
-                        error instanceof Error ? error.message : "Unknown error"
-                      }`,
-                    );
-                  }
-                }}
-              >
-                <PinIcon
-                  className={cn(
-                    "w-5 h-5 stroke-[1.3]",
-                    isPinned && "fill-current",
-                  )}
-                />
+          {currentNote && deleteNote && (
+            <Tooltip content="Delete note">
+              <IconButton onClick={() => setDeleteDialogOpen(true)}>
+                <TrashIcon className="w-4.25 h-4.25 stroke-[1.6]" />
               </IconButton>
             </Tooltip>
           )}
@@ -2041,16 +2026,19 @@ export function Editor({
         </div>
       </div>
 
-      {/* Format Bar – transition only after initial mount to avoid height animation on note load */}
-      <div
-        className={`${focusMode || sourceMode ? "opacity-0 max-h-0 overflow-hidden pointer-events-none" : "opacity-100 max-h-20"} ${hasTransitioned ? "transition-all duration-1000 delay-500" : ""}`}
-      >
-        <FormatBar
-          editor={editor}
-          onAddLink={handleAddLink}
-          onAddBlockMath={handleAddBlockMath}
-          onAddImage={handleAddImage}
-        />
+      {/* Format Bar */}
+      <div>
+        <div
+          className={`${!focusMode && !sourceMode ? "opacity-100 max-h-20" : "opacity-0 max-h-0 overflow-hidden pointer-events-none"} ${hasTransitioned ? "transition-all duration-300" : ""}`}
+        >
+          <FormatBar
+            editor={editor}
+            onAddLink={handleAddLink}
+            onAddBlockMath={handleAddBlockMath}
+            onAddImage={handleAddImage}
+            centered={centerFormatBar}
+          />
+        </div>
       </div>
 
       {/* Editor content area with resize handles overlay */}
@@ -2295,6 +2283,31 @@ export function Editor({
           )}
         </div>
       </div>
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete note?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the note and all its content. This
+              action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                if (currentNote && deleteNote) {
+                  await deleteNote(currentNote.id);
+                  setDeleteDialogOpen(false);
+                }
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
