@@ -21,77 +21,10 @@ npm run tauri dev    # Run full app in development mode
 npm run tauri build  # Build production app
 ```
 
-## CI/CD
-
-### CI (`ci.yml`)
-
-Runs on every push to `main` and on PRs. Validates frontend build (`tsc` + Vite) and Rust compilation (`cargo check` + `cargo clippy`) on an Ubuntu runner. Does not build the Tauri app bundle.
-
-### Release (`release.yml`)
-
-Runs on `v*` tag push or manual `workflow_dispatch`. Builds, signs, and publishes for all platforms in parallel:
-
-- **macOS**: Universal binary (arm64 + x86_64), code-signed and notarized
-- **Windows**: NSIS installer (x64)
-- **Linux**: AppImage and .deb
-
-Creates a **draft** GitHub release with all artifacts and `latest.json` for the auto-updater.
-
-### Releasing a New Version
-
-1. Bump version in `package.json` and `src-tauri/tauri.conf.json`
-2. Commit the version bump to `main`
-3. Tag and push:
-   ```bash
-   git tag v0.5.0 && git push origin v0.5.0
-   ```
-4. The release workflow builds all platforms (~20-30 min)
-5. Review the draft release on GitHub, edit release notes
-6. Publish the release — the auto-updater endpoint immediately serves the new `latest.json`
-
-### GitHub Secrets Required
-
-These must be configured in the repo settings (Settings > Secrets and variables > Actions):
-
-| Secret | Purpose |
-|--------|---------|
-| `APPLE_CERTIFICATE` | Base64-encoded .p12 export of Developer ID certificate |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the .p12 file |
-| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
-| `APPLE_ID` | Apple Developer account email |
-| `APPLE_PASSWORD` | App-specific password for notarization |
-| `APPLE_TEAM_ID` | Apple Developer Team ID |
-| `TAURI_SIGNING_PRIVATE_KEY` | Contents of Tauri updater signing key |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for Tauri signing key |
-
-### Auto-Updater
-
-The app checks for updates via the Tauri updater plugin, which fetches `latest.json` from GitHub releases:
-- Endpoint: `https://github.com/erictli/think/releases/latest/download/latest.json`
-- On startup (after 3s delay) and manually via Settings > About > "Check for Updates"
-- If a newer version is found, a toast appears with an "Update Now" button
-- Config is in `src-tauri/tauri.conf.json` under `plugins.updater`
-
-### Local Build (Manual)
-
-For local testing without CI, you can still build manually:
-
-```bash
-# macOS universal binary (requires signing env vars from .env.build)
-source .env.build
-npm run tauri build -- --target universal-apple-darwin
-
-# Windows (on a Windows machine)
-npm run tauri build
-```
-
 ## Project Structure
 
 ```
 think/
-├── .github/workflows/
-│   ├── ci.yml                      # CI: build validation on push/PR
-│   └── release.yml                 # Release: multi-platform build + publish
 ├── src/                            # React frontend
 │   ├── components/
 │   │   ├── editor/                 # TipTap editor + extensions
